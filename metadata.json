@@ -1,0 +1,6 @@
+{
+  "name": "Naver SEO & Content Studio",
+  "description": "네이버 상위노출 최적화 블로그 글, 미드저니 실사 이미지 프롬프트, 유튜브 스크립트 및 장면 묘사를 순차적으로 자동 생성하는 AI 콘텐츠 스튜디오",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
