@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { BlogPostData } from "../types";
-import { Copy, Check, FileText, BarChart3, Hash, Sparkles, AlertCircle } from "lucide-react";
+import { Copy, Check, FileText, BarChart3, Hash, Sparkles, AlertCircle, Globe } from "lucide-react";
 
 interface BlogPostDisplayProps {
   data: BlogPostData;
@@ -51,6 +51,11 @@ export const BlogPostDisplay: React.FC<BlogPostDisplayProps> = ({ data }) => {
       {/* SEO Compliance & Stats Toolbar */}
       <div id="seo-toolbar" className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-xs flex flex-wrap items-center justify-between gap-4">
         <div id="seo-badges-container" className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-sky-50 text-sky-800 rounded-lg text-xs font-semibold border border-sky-200">
+            <Globe className="w-3.5 h-3.5 text-sky-600" />
+            <span>실시간 구글 웹 검색(Google Search) 데이터 반영 완료</span>
+          </div>
+
           <div className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 text-emerald-800 rounded-lg text-xs font-semibold border border-emerald-200">
             <BarChart3 className="w-3.5 h-3.5 text-emerald-600" />
             <span>메인키워드 빈도: <strong className="text-emerald-900 font-bold">{data.keywordCount || 6}회</strong> (5~6회 적정)</span>

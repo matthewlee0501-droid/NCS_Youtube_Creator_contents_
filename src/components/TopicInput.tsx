@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Sparkles, ArrowRight, Lightbulb, CheckCircle2 } from "lucide-react";
+import { Sparkles, ArrowRight, Lightbulb, CheckCircle2, Globe, Search } from "lucide-react";
 
 interface TopicInputProps {
   onSubmitTopic: (topic: string) => void;
@@ -30,15 +30,21 @@ export const TopicInput: React.FC<TopicInputProps> = ({
     <div id="topic-input-card" className="w-full max-w-4xl mx-auto bg-white rounded-2xl border border-slate-200/80 shadow-md p-6 sm:p-8 transition-all">
       {/* Header Banner */}
       <div id="topic-input-header" className="mb-6">
-        <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-50 text-emerald-700 text-xs font-semibold mb-3 border border-emerald-200/60">
-          <Sparkles className="w-3.5 h-3.5" />
-          <span>네이버 블로그 상위노출 & 콘텐츠 통합 자동화</span>
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-50 text-emerald-700 text-xs font-semibold border border-emerald-200/60">
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>네이버 블로그 상위노출 & 콘텐츠 통합 자동화</span>
+          </div>
+          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-sky-50 text-sky-700 text-xs font-semibold border border-sky-200">
+            <Globe className="w-3.5 h-3.5 text-sky-600 animate-pulse" />
+            <span>실시간 구글 웹 검색 (Google Search Grounding) 적용</span>
+          </div>
         </div>
         <h2 id="topic-input-title" className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight leading-tight">
           작성하고 싶은 주제나 아이디어를 입력해 주세요
         </h2>
         <p id="topic-input-subtitle" className="mt-2 text-sm text-slate-600 leading-relaxed">
-          주제를 입력하시면 AI가 네이버 검색 상위노출용 <strong className="text-emerald-700 font-semibold">3가지 제목 옵션</strong>을 제안합니다. 제목을 선택하면 블로그 글, 미드저니 실사 프롬프트, 유튜브 스크립트가 순차적으로 완성됩니다.
+          주제를 입력하시면 AI가 구글 실시간 웹 검색으로 최신 정보/뉴스/트렌드를 수집하여 네이버 상위노출용 <strong className="text-emerald-700 font-semibold">4가지 제목 옵션</strong>을 제안합니다. 제목을 선택하면 블로그 글, 미드저니 실사 프롬프트, 유튜브 스크립트가 완성됩니다.
         </p>
       </div>
 
