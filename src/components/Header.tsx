@@ -1,16 +1,20 @@
 import React from "react";
-import { FileText, Sparkles, History, RefreshCw, Layers } from "lucide-react";
+import { Sparkles, History, RefreshCw, Bot } from "lucide-react";
 
 interface HeaderProps {
   onOpenHistory: () => void;
   onReset: () => void;
   historyCount: number;
+  selectedModel: string;
+  onSelectModel: (model: string) => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
   onOpenHistory,
   onReset,
   historyCount,
+  selectedModel,
+  onSelectModel,
 }) => {
   return (
     <header id="app-header" className="sticky top-0 z-40 bg-white/90 backdrop-blur-md border-b border-slate-200/80 shadow-xs">
@@ -37,10 +41,26 @@ export const Header: React.FC<HeaderProps> = ({
 
         {/* Action Controls */}
         <div id="header-actions" className="flex items-center gap-2">
+          {/* Model Selector - Positioned left of 새로 쓰기 */}
+          <div id="model-selector-wrapper" className="flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-50 hover:bg-slate-100/80 border border-slate-200 rounded-lg text-xs font-medium text-slate-700 transition-colors shadow-2xs">
+            <Bot className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+            <select
+              id="model-selector"
+              value={selectedModel}
+              onChange={(e) => onSelectModel(e.target.value)}
+              className="bg-transparent text-slate-800 font-semibold focus:outline-none cursor-pointer text-xs pr-1"
+              title="AI 엔진 모델 선택 (3.6, 3.7, 3.8 Flash)"
+            >
+              <option value="gemini-3.6-flash">3.6 Flash (무료/빠름)</option>
+              <option value="gemini-3.7-flash">3.7 Flash (균형/안정)</option>
+              <option value="gemini-3.8-flash">3.8 Flash (최신/고성능)</option>
+            </select>
+          </div>
+
           <button
             id="reset-btn"
             onClick={onReset}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors border border-slate-200"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors border border-slate-200 cursor-pointer"
             title="새 작업 시작하기"
           >
             <RefreshCw className="w-3.5 h-3.5" />
@@ -50,7 +70,7 @@ export const Header: React.FC<HeaderProps> = ({
           <button
             id="history-btn"
             onClick={onOpenHistory}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg transition-colors border border-emerald-200/80"
+            className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg transition-colors border border-emerald-200/80 cursor-pointer"
           >
             <History className="w-3.5 h-3.5" />
             <span>히스토리</span>

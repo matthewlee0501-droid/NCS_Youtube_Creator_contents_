@@ -56,9 +56,9 @@ export interface YoutubePackageData {
 
 export interface GeneratedContentResponse {
   selectedTitle: string;
-  blogPost: BlogPostData;
-  imagePrompts: ImagePromptItem[];
-  youtubePackage: YoutubePackageData;
+  blogPost?: BlogPostData | null;
+  imagePrompts?: ImagePromptItem[] | null;
+  youtubePackage?: YoutubePackageData | null;
 }
 
 export interface ProjectHistoryItem {
