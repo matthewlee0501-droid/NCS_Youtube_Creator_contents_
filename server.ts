@@ -27,6 +27,63 @@ const getGeminiClient = () => {
   });
 };
 
+// Retry helper with exponential backoff for transient rate-limit (429) errors
+async function callGeminiWithRetry<T>(fn: () => Promise<T>, maxRetries = 2, initialDelayMs = 2500): Promise<T> {
+  let lastError: any;
+  let delay = initialDelayMs;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      lastError = err;
+      const errMsg = err?.message || (typeof err === "string" ? err : JSON.stringify(err));
+      const isRateLimit =
+        errMsg.includes("429") ||
+        errMsg.includes("RESOURCE_EXHAUSTED") ||
+        errMsg.includes("quota") ||
+        err?.status === 429 ||
+        err?.code === 429;
+
+      if (isRateLimit && attempt < maxRetries) {
+        console.warn(`[Gemini API] 429 Rate limit / Quota exceeded. Retrying attempt ${attempt + 1}/${maxRetries} after ${delay}ms...`);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        delay *= 2;
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastError;
+}
+
+// Format Gemini error into clear, actionable Korean message
+function formatGeminiError(error: any): { statusCode: number; message: string; isQuotaExceeded: boolean } {
+  const errMsg = error?.message || (typeof error === "string" ? error : JSON.stringify(error));
+  const isQuotaExceeded =
+    errMsg.includes("429") ||
+    errMsg.includes("RESOURCE_EXHAUSTED") ||
+    errMsg.includes("quota") ||
+    errMsg.includes("Quota") ||
+    error?.status === 429 ||
+    error?.code === 429;
+
+  if (isQuotaExceeded) {
+    return {
+      statusCode: 429,
+      message:
+        "Google Gemini API 사용량 한도(분당 요청 수 또는 일일 무료 할당량)가 일시적으로 초과되었습니다 (429 RESOURCE_EXHAUSTED).\n\n• 분당 요청 제한(RPM)인 경우 약 30초~1분 뒤 다시 시도하시면 정상 작동합니다.\n• 무료 일일 할당량(RPD)이 모두 소진된 경우, Google AI Studio 좌측 상단 메뉴의 [Settings > Secrets] 패널에서 결제(Billing)가 등록된 개인 Gemini API Key를 선택/등록하시면 제한 없이 이용하실 수 있습니다.",
+      isQuotaExceeded: true,
+    };
+  }
+
+  return {
+    statusCode: 500,
+    message: errMsg || "콘텐츠 생성 중 오류가 발생했습니다.",
+    isQuotaExceeded: false,
+  };
+}
+
 // API Endpoint 1: Generate 4 Title & Topic Options
 app.post("/api/generate-titles", async (req, res) => {
   try {
@@ -49,43 +106,49 @@ app.post("/api/generate-titles", async (req, res) => {
 4. 한국어로 작성하며 친근하고 눈길을 사로잡는 제목 스타일을 적용한다.
 `;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.6-flash",
-      contents: `사용자가 작성하고 싶은 주제/아이디어: "${topic}"\n\n구글 실시간 웹 검색(Google Search)을 참고하여 최신 트렌드와 정보를 조사한 후, 위 주제를 바탕으로 네이버 상위노출을 위한 4가지 블로그 제목 및 타겟 옵션을 생성해주세요.`,
-      config: {
-        tools: [{ googleSearch: {} }],
-        systemInstruction,
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.ARRAY,
-          description: "4개의 제목 옵션 리스트",
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              id: { type: Type.INTEGER },
-              title: { type: Type.STRING, description: "메인키워드와 서브키워드가 결합된 블로그 제목" },
-              subTitle: { type: Type.STRING, description: "부제목 또는 서브 헤드라인" },
-              mainKeyword: { type: Type.STRING, description: "타겟 메인 키워드" },
-              subKeywords: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING },
-                description: "연관 서브 키워드 2~3개",
+    const response = await callGeminiWithRetry(() =>
+      ai.models.generateContent({
+        model: "gemini-3.8-flash",
+        contents: `사용자가 작성하고 싶은 주제/아이디어: "${topic}"\n\n구글 실시간 웹 검색(Google Search)을 참고하여 최신 트렌드와 정보를 조사한 후, 위 주제를 바탕으로 네이버 상위노출을 위한 4가지 블로그 제목 및 타겟 옵션을 생성해주세요.`,
+        config: {
+          tools: [{ googleSearch: {} }],
+          systemInstruction,
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.ARRAY,
+            description: "4개의 제목 옵션 리스트",
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                id: { type: Type.INTEGER },
+                title: { type: Type.STRING, description: "메인키워드와 서브키워드가 결합된 블로그 제목" },
+                subTitle: { type: Type.STRING, description: "부제목 또는 서브 헤드라인" },
+                mainKeyword: { type: Type.STRING, description: "타겟 메인 키워드" },
+                subKeywords: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                  description: "연관 서브 키워드 2~3개",
+                },
+                targetAudience: { type: Type.STRING, description: "이 글의 타깃 독자층" },
+                angle: { type: Type.STRING, description: "콘셉트 및 접근 방식 (예: 실전 가이드, 경험 후기, 비교 분석 등)" },
               },
-              targetAudience: { type: Type.STRING, description: "이 글의 타깃 독자층" },
-              angle: { type: Type.STRING, description: "콘셉트 및 접근 방식 (예: 실전 가이드, 경험 후기, 비교 분석 등)" },
+              required: ["id", "title", "mainKeyword", "subKeywords", "targetAudience", "angle"],
             },
-            required: ["id", "title", "mainKeyword", "subKeywords", "targetAudience", "angle"],
           },
         },
-      },
-    });
+      })
+    );
 
     const text = response.text || "[]";
     const titles = JSON.parse(text);
     return res.json({ titles });
   } catch (error: any) {
     console.error("Error generating titles:", error);
-    return res.status(500).json({ error: error.message || "제목 옵션 생성 중 오류가 발생했습니다." });
+    const formatted = formatGeminiError(error);
+    return res.status(formatted.statusCode).json({
+      error: formatted.message,
+      isQuotaExceeded: formatted.isQuotaExceeded,
+    });
   }
 });
 
@@ -164,10 +227,11 @@ app.post("/api/generate-content", async (req, res) => {
 위 가이드라인에 따라 1) 네이버 상위노출 블로그 글, 2) 미드저니 프롬프트 8장, 3) 16~20자 대사 단위 1:1 장면 분리 유튜브 스크립트 패키지를 완전하게 생성해 주세요.
 `;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.6-flash",
-      contents: userMessage,
-      config: {
+    const response = await callGeminiWithRetry(() =>
+      ai.models.generateContent({
+        model: "gemini-3.8-flash",
+        contents: userMessage,
+        config: {
         tools: [{ googleSearch: {} }],
         systemInstruction: promptInstructions,
         responseMimeType: "application/json",
@@ -263,14 +327,18 @@ app.post("/api/generate-content", async (req, res) => {
           required: ["selectedTitle", "blogPost", "imagePrompts", "youtubePackage"],
         },
       },
-    });
+    }));
 
     const text = response.text || "{}";
     const resultData = JSON.parse(text);
     return res.json(resultData);
   } catch (error: any) {
     console.error("Error generating sequential content:", error);
-    return res.status(500).json({ error: error.message || "콘텐츠 작성 중 오류가 발생했습니다." });
+    const formatted = formatGeminiError(error);
+    return res.status(formatted.statusCode).json({
+      error: formatted.message,
+      isQuotaExceeded: formatted.isQuotaExceeded,
+    });
   }
 });
 

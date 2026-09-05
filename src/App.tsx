@@ -182,15 +182,32 @@ export default function App() {
       {/* Error Alert Message */}
       {errorMessage && (
         <div id="error-alert" className="max-w-5xl mx-auto my-4 px-4 w-full">
-          <div className="bg-rose-50 border border-rose-200 text-rose-800 p-4 rounded-xl text-xs sm:text-sm flex items-start gap-3 shadow-2xs">
-            <AlertCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
-            <div className="flex-1">
-              <strong className="font-bold block">오류가 발생했습니다</strong>
-              <span>{errorMessage}</span>
+          <div className="bg-amber-50/90 border border-amber-300 text-amber-950 p-4 sm:p-5 rounded-2xl text-xs sm:text-sm shadow-xs flex items-start gap-3.5">
+            <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+            <div className="flex-1 space-y-2">
+              <strong className="font-bold text-sm text-amber-900 block">
+                {errorMessage.includes("429") || errorMessage.includes("RESOURCE_EXHAUSTED") || errorMessage.includes("사용량 한도")
+                  ? "Gemini API 사용량 한도 (429 RESOURCE_EXHAUSTED) 안내"
+                  : "요청 처리 중 오류가 발생했습니다"}
+              </strong>
+              <p className="whitespace-pre-line leading-relaxed text-amber-900/90">
+                {errorMessage}
+              </p>
+              {selectedTitleOption && workflowStep === "SELECT_TITLE" && (
+                <div className="pt-2">
+                  <button
+                    onClick={() => handleSelectTitle(selectedTitleOption)}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-semibold transition-colors shadow-xs"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>선택한 제목으로 다시 생성 시도</span>
+                  </button>
+                </div>
+              )}
             </div>
             <button
               onClick={() => setErrorMessage(null)}
-              className="text-rose-500 hover:text-rose-700 text-xs font-bold"
+              className="text-amber-600 hover:text-amber-800 text-xs font-bold shrink-0 px-2 py-1 rounded-md hover:bg-amber-100/60 transition-colors"
             >
               닫기
             </button>
