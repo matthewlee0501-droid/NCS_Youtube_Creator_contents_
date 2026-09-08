@@ -29,11 +29,13 @@ const getGeminiClient = () => {
 
 // Helper to sanitize requested model
 function getValidModel(requestedModel?: string): string {
-  if (!requestedModel) return "gemini-3.6-flash";
+  if (!requestedModel) return "gemini-3.7-flash";
   const m = requestedModel.toLowerCase().trim();
   if (m.includes("3.8")) return "gemini-3.8-flash";
   if (m.includes("3.7")) return "gemini-3.7-flash";
   if (m.includes("3.6")) return "gemini-3.6-flash";
+  if (m.includes("2.5")) return "gemini-2.5-flash";
+  if (m.includes("lite")) return "gemini-3.1-flash-lite";
   return requestedModel;
 }
 
@@ -125,33 +127,145 @@ const youtubePackageSchema = {
   required: ["videoTitle", "descriptionText", "scriptScenes", "tags"],
 };
 
-// Retry helper with exponential backoff for transient rate-limit (429) errors
-async function callGeminiWithRetry<T>(fn: () => Promise<T>, maxRetries = 2, initialDelayMs = 2500): Promise<T> {
-  let lastError: any;
-  let delay = initialDelayMs;
+// Safe JSON parser helper
+function cleanAndParseJson<T>(rawText: string | undefined, defaultVal: T): T {
+  if (!rawText) return defaultVal;
+  let text = rawText.trim();
+  if (text.startsWith("```json")) {
+    text = text.substring(7);
+  } else if (text.startsWith("```")) {
+    text = text.substring(3);
+  }
+  if (text.endsWith("```")) {
+    text = text.substring(0, text.length - 3);
+  }
+  text = text.trim();
 
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    const firstObj = text.indexOf("{");
+    const firstArr = text.indexOf("[");
+    const startIdx = firstArr !== -1 && (firstObj === -1 || firstArr < firstObj) ? firstArr : firstObj;
+
+    const lastObj = text.lastIndexOf("}");
+    const lastArr = text.lastIndexOf("]");
+    const endIdx = Math.max(lastObj, lastArr);
+
+    if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+      try {
+        return JSON.parse(text.slice(startIdx, endIdx + 1));
+      } catch (e2) {
+        console.error("JSON parsing fallback failed:", e2);
+      }
+    }
+    return defaultVal;
+  }
+}
+
+interface GeminiCallParams {
+  primaryModel: string;
+  contents: any;
+  systemInstruction?: string;
+  responseSchema?: any;
+  useSearchGrounding?: boolean;
+}
+
+// Resilient Multi-Model & Grounding Fallback Engine
+async function generateContentWithResilience(
+  ai: GoogleGenAI,
+  params: GeminiCallParams
+): Promise<string> {
+  const modelsToTry = [
+    params.primaryModel,
+    "gemini-3.7-flash",
+    "gemini-3.8-flash",
+    "gemini-2.5-flash",
+    "gemini-3.1-flash-lite",
+    "gemini-3.6-flash",
+  ].filter((v, i, a) => a.indexOf(v) === i);
+
+  let lastError: any;
+
+  // Pass 1: Try models with Google Search Grounding (if requested)
+  for (const model of modelsToTry) {
     try {
-      return await fn();
+      const config: any = {
+        responseMimeType: "application/json",
+      };
+      if (params.systemInstruction) {
+        config.systemInstruction = params.systemInstruction;
+      }
+      if (params.responseSchema) {
+        config.responseSchema = params.responseSchema;
+      }
+      if (params.useSearchGrounding) {
+        config.tools = [{ googleSearch: {} }];
+      }
+
+      console.log(`[Gemini API] Requesting model: ${model} (search: ${!!params.useSearchGrounding})`);
+      const response = await ai.models.generateContent({
+        model,
+        contents: params.contents,
+        config,
+      });
+
+      const text = response.text;
+      if (text && text.trim().length > 0) {
+        return text;
+      }
     } catch (err: any) {
       lastError = err;
       const errMsg = err?.message || (typeof err === "string" ? err : JSON.stringify(err));
+      console.warn(`[Gemini API] Warning with model ${model} (search=${!!params.useSearchGrounding}): ${errMsg}`);
+
       const isRateLimit =
         errMsg.includes("429") ||
         errMsg.includes("RESOURCE_EXHAUSTED") ||
         errMsg.includes("quota") ||
+        errMsg.includes("Quota") ||
         err?.status === 429 ||
         err?.code === 429;
 
-      if (isRateLimit && attempt < maxRetries) {
-        console.warn(`[Gemini API] 429 Rate limit / Quota exceeded. Retrying attempt ${attempt + 1}/${maxRetries} after ${delay}ms...`);
-        await new Promise((resolve) => setTimeout(resolve, delay));
-        delay *= 2;
-        continue;
+      if (isRateLimit) {
+        // Short pause before trying next fallback model
+        await new Promise((r) => setTimeout(r, 1200));
       }
-      throw err;
     }
   }
+
+  // Pass 2: If Search Grounding was active and caused 429 Quota exhaustion, fallback without search tool
+  if (params.useSearchGrounding) {
+    console.log("[Gemini API] Attempting non-grounded fallback to bypass search quota limits...");
+    for (const model of modelsToTry) {
+      try {
+        const config: any = {
+          responseMimeType: "application/json",
+        };
+        if (params.systemInstruction) {
+          config.systemInstruction = params.systemInstruction;
+        }
+        if (params.responseSchema) {
+          config.responseSchema = params.responseSchema;
+        }
+
+        const response = await ai.models.generateContent({
+          model,
+          contents: params.contents,
+          config,
+        });
+
+        const text = response.text;
+        if (text && text.trim().length > 0) {
+          return text;
+        }
+      } catch (err: any) {
+        lastError = err;
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+    }
+  }
+
   throw lastError;
 }
 
@@ -170,7 +284,7 @@ function formatGeminiError(error: any): { statusCode: number; message: string; i
     return {
       statusCode: 429,
       message:
-        "Google Gemini API 사용량 한도(분당 요청 수 또는 일일 무료 할당량)가 일시적으로 초과되었습니다 (429 RESOURCE_EXHAUSTED).\n\n• 분당 요청 제한(RPM)인 경우 약 30초~1분 뒤 다시 시도하시면 정상 작동합니다.\n• 무료 일일 할당량(RPD)이 모두 소진된 경우, Google AI Studio 좌측 상단 메뉴의 [Settings > Secrets] 패널에서 결제(Billing)가 등록된 개인 Gemini API Key를 선택/등록하시면 제한 없이 이용하실 수 있습니다.",
+        "Google Gemini API의 무료 일일/분당 할당량(Quota)에 도달했습니다 (429 RESOURCE_EXHAUSTED).\n\n• 분당 요청 제한(RPM)인 경우 약 20~30초 후 [다시 시도] 버튼을 누르시면 정상 작동합니다.\n• 무료 티어 소진 시 상단 모델 선택기에서 다른 모델(3.7 Flash 또는 3.8 Flash)로 전환해보시거나, Google AI Studio 좌측 상단 [Settings > Secrets] 패널에서 결제가 연결된 개인 Gemini API Key를 등록하시면 제한 없이 생성할 수 있습니다.",
       isQuotaExceeded: true,
     };
   }
@@ -181,7 +295,6 @@ function formatGeminiError(error: any): { statusCode: number; message: string; i
     isQuotaExceeded: false,
   };
 }
-
 // API Endpoint 1: Generate 4 Title & Topic Options
 app.post("/api/generate-titles", async (req, res) => {
   try {
@@ -205,41 +318,37 @@ app.post("/api/generate-titles", async (req, res) => {
 4. 한국어로 작성하며 친근하고 눈길을 사로잡는 제목 스타일을 적용한다.
 `;
 
-    const response = await callGeminiWithRetry(() =>
-      ai.models.generateContent({
-        model: targetModel,
-        contents: `사용자가 작성하고 싶은 주제/아이디어: "${topic}"\n\n구글 실시간 웹 검색(Google Search)을 참고하여 최신 트렌드와 정보를 조사한 후, 위 주제를 바탕으로 네이버 상위노출을 위한 4가지 블로그 제목 및 타겟 옵션을 생성해주세요.`,
-        config: {
-          tools: [{ googleSearch: {} }],
-          systemInstruction,
-          responseMimeType: "application/json",
-          responseSchema: {
+    const titlesSchema = {
+      type: Type.ARRAY,
+      description: "4개의 제목 옵션 리스트",
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          id: { type: Type.INTEGER },
+          title: { type: Type.STRING, description: "메인키워드와 서브키워드가 결합된 블로그 제목" },
+          subTitle: { type: Type.STRING, description: "부제목 또는 서브 헤드라인" },
+          mainKeyword: { type: Type.STRING, description: "타겟 메인 키워드" },
+          subKeywords: {
             type: Type.ARRAY,
-            description: "4개의 제목 옵션 리스트",
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                id: { type: Type.INTEGER },
-                title: { type: Type.STRING, description: "메인키워드와 서브키워드가 결합된 블로그 제목" },
-                subTitle: { type: Type.STRING, description: "부제목 또는 서브 헤드라인" },
-                mainKeyword: { type: Type.STRING, description: "타겟 메인 키워드" },
-                subKeywords: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                  description: "연관 서브 키워드 2~3개",
-                },
-                targetAudience: { type: Type.STRING, description: "이 글의 타깃 독자층" },
-                angle: { type: Type.STRING, description: "콘셉트 및 접근 방식 (예: 실전 가이드, 경험 후기, 비교 분석 등)" },
-              },
-              required: ["id", "title", "mainKeyword", "subKeywords", "targetAudience", "angle"],
-            },
+            items: { type: Type.STRING },
+            description: "연관 서브 키워드 2~3개",
           },
+          targetAudience: { type: Type.STRING, description: "이 글의 타깃 독자층" },
+          angle: { type: Type.STRING, description: "콘셉트 및 접근 방식 (예: 실전 가이드, 경험 후기, 비교 분석 등)" },
         },
-      })
-    );
+        required: ["id", "title", "mainKeyword", "subKeywords", "targetAudience", "angle"],
+      },
+    };
 
-    const text = response.text || "[]";
-    const titles = JSON.parse(text);
+    const text = await generateContentWithResilience(ai, {
+      primaryModel: targetModel,
+      contents: `사용자가 작성하고 싶은 주제/아이디어: "${topic}"\n\n구글 실시간 웹 검색(Google Search)을 참고하여 최신 트렌드와 정보를 조사한 후, 위 주제를 바탕으로 네이버 상위노출을 위한 4가지 블로그 제목 및 타겟 옵션을 JSON으로 생성해주세요.`,
+      systemInstruction,
+      responseSchema: titlesSchema,
+      useSearchGrounding: true,
+    });
+
+    const titles = cleanAndParseJson<any[]>(text, []);
     return res.json({ titles });
   } catch (error: any) {
     console.error("Error generating titles:", error);
@@ -292,28 +401,25 @@ app.post("/api/generate-blog", async (req, res) => {
 [선택된 제목 옵션]
 - 제목: ${selectedTitleOption.title}
 - 메인 키워드: ${selectedTitleOption.mainKeyword}
-- 서브 키워드: ${selectedTitleOption.subKeywords.join(", ")}
-- 타겟 독자: ${selectedTitleOption.targetAudience}
+- 서브 키워드: ${selectedTitleOption.subKeywords?.join(", ") || ""}
+- 타겟 독자: ${selectedTitleOption.targetAudience || ""}
 - 원본 요청 주제: ${topic || ""}
 
 위 가이드라인에 따라 네이버 검색 상위노출에 최적화된 최고 품질의 블로그 본문 글을 완성해 주세요.
 `;
 
-    const response = await callGeminiWithRetry(() =>
-      ai.models.generateContent({
-        model: targetModel,
-        contents: userMessage,
-        config: {
-          tools: [{ googleSearch: {} }],
-          systemInstruction,
-          responseMimeType: "application/json",
-          responseSchema: blogPostSchema,
-        },
-      })
-    );
+    const text = await generateContentWithResilience(ai, {
+      primaryModel: targetModel,
+      contents: userMessage,
+      systemInstruction,
+      responseSchema: blogPostSchema,
+      useSearchGrounding: true,
+    });
 
-    const text = response.text || "{}";
-    const blogPost = JSON.parse(text);
+    const blogPost = cleanAndParseJson<any>(text, null);
+    if (!blogPost) {
+      throw new Error("블로그 본문 파싱에 실패했습니다. 다시 시도해주세요.");
+    }
     return res.json({ blogPost });
   } catch (error: any) {
     console.error("Error generating blog post:", error);
@@ -357,26 +463,21 @@ app.post("/api/generate-images", async (req, res) => {
 [주제 및 제목]
 - 제목: ${selectedTitleOption.title}
 - 메인 키워드: ${selectedTitleOption.mainKeyword}
-- 서브 키워드: ${selectedTitleOption.subKeywords.join(", ")}
+- 서브 키워드: ${selectedTitleOption.subKeywords?.join(", ") || ""}
 ${blogSummary}
 
 위 블로그 글에 배치할 트렌디한 1:1 비율의 고품질 실사 이미지 프롬프트 8장을 생성해 주세요.
 `;
 
-    const response = await callGeminiWithRetry(() =>
-      ai.models.generateContent({
-        model: targetModel,
-        contents: userMessage,
-        config: {
-          systemInstruction,
-          responseMimeType: "application/json",
-          responseSchema: imagePromptsSchema,
-        },
-      })
-    );
+    const text = await generateContentWithResilience(ai, {
+      primaryModel: targetModel,
+      contents: userMessage,
+      systemInstruction,
+      responseSchema: imagePromptsSchema,
+      useSearchGrounding: false,
+    });
 
-    const text = response.text || "[]";
-    const imagePrompts = JSON.parse(text);
+    const imagePrompts = cleanAndParseJson<any[]>(text, []);
     return res.json({ imagePrompts });
   } catch (error: any) {
     console.error("Error generating image prompts:", error);
@@ -428,20 +529,18 @@ ${blogSummary}
 위 가이드라인에 따라 16~20자 대사 단위(마침표/쉼표 금지)로 1:1 장면 분리된 유튜브 스크립트 및 스토리보드를 완성해 주세요.
 `;
 
-    const response = await callGeminiWithRetry(() =>
-      ai.models.generateContent({
-        model: targetModel,
-        contents: userMessage,
-        config: {
-          systemInstruction,
-          responseMimeType: "application/json",
-          responseSchema: youtubePackageSchema,
-        },
-      })
-    );
+    const text = await generateContentWithResilience(ai, {
+      primaryModel: targetModel,
+      contents: userMessage,
+      systemInstruction,
+      responseSchema: youtubePackageSchema,
+      useSearchGrounding: false,
+    });
 
-    const text = response.text || "{}";
-    const youtubePackage = JSON.parse(text);
+    const youtubePackage = cleanAndParseJson<any>(text, null);
+    if (!youtubePackage) {
+      throw new Error("유튜브 대본 파싱에 실패했습니다. 다시 시도해주세요.");
+    }
     return res.json({ youtubePackage });
   } catch (error: any) {
     console.error("Error generating youtube script:", error);
@@ -522,37 +621,36 @@ app.post("/api/generate-content", async (req, res) => {
 [선택된 제목 옵션]
 - 제목: ${selectedTitleOption.title}
 - 메인 키워드: ${selectedTitleOption.mainKeyword}
-- 서브 키워드: ${selectedTitleOption.subKeywords.join(", ")}
-- 타겟 독자: ${selectedTitleOption.targetAudience}
-- 원본 요청 주제: ${topic}
+- 서브 키워드: ${selectedTitleOption.subKeywords?.join(", ") || ""}
+- 타겟 독자: ${selectedTitleOption.targetAudience || ""}
+- 원본 요청 주제: ${topic || ""}
 
 위 가이드라인에 따라 1) 네이버 상위노출 블로그 글, 2) 미드저니 프롬프트 8장, 3) 16~20자 대사 단위 1:1 장면 분리 유튜브 스크립트 패키지를 완전하게 생성해 주세요.
 `;
 
-    const response = await callGeminiWithRetry(() =>
-      ai.models.generateContent({
-        model: targetModel,
-        contents: userMessage,
-        config: {
-          tools: [{ googleSearch: {} }],
-          systemInstruction: promptInstructions,
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              selectedTitle: { type: Type.STRING },
-              blogPost: blogPostSchema,
-              imagePrompts: imagePromptsSchema,
-              youtubePackage: youtubePackageSchema,
-            },
-            required: ["selectedTitle", "blogPost", "imagePrompts", "youtubePackage"],
-          },
-        },
-      })
-    );
+    const combinedSchema = {
+      type: Type.OBJECT,
+      properties: {
+        selectedTitle: { type: Type.STRING },
+        blogPost: blogPostSchema,
+        imagePrompts: imagePromptsSchema,
+        youtubePackage: youtubePackageSchema,
+      },
+      required: ["selectedTitle", "blogPost", "imagePrompts", "youtubePackage"],
+    };
 
-    const text = response.text || "{}";
-    const resultData = JSON.parse(text);
+    const text = await generateContentWithResilience(ai, {
+      primaryModel: targetModel,
+      contents: userMessage,
+      systemInstruction: promptInstructions,
+      responseSchema: combinedSchema,
+      useSearchGrounding: true,
+    });
+
+    const resultData = cleanAndParseJson<any>(text, null);
+    if (!resultData) {
+      throw new Error("콘텐츠 데이터 파싱에 실패했습니다. 다시 시도해주세요.");
+    }
     return res.json(resultData);
   } catch (error: any) {
     console.error("Error generating sequential content:", error);

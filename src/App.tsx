@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   TitleOption,
   GeneratedContentResponse,
@@ -26,6 +26,9 @@ import {
   RefreshCw,
   Loader2,
   Bot,
+  Clock,
+  ArrowRight,
+  Play,
 } from "lucide-react";
 
 interface SectionStatus {
@@ -69,6 +72,52 @@ export default function App() {
     images: null,
     youtube: null,
   });
+
+  // Sequential Processing & 3s Cooldown Mode (Protects against 429 Rate Limits)
+  const [generationMode, setGenerationMode] = useState<"auto_delay" | "manual">("auto_delay");
+  const [cooldown, setCooldown] = useState<{
+    active: boolean;
+    nextTask: "images" | "youtube" | null;
+    secondsLeft: number;
+  }>({
+    active: false,
+    nextTask: null,
+    secondsLeft: 0,
+  });
+  const skipCooldownRef = useRef<(() => void) | null>(null);
+
+  // Helper to wait with countdown and user skip option
+  const waitCooldown = (seconds: number, nextTask: "images" | "youtube"): Promise<boolean> => {
+    return new Promise((resolve) => {
+      setCooldown({ active: true, nextTask, secondsLeft: seconds });
+      let current = seconds;
+
+      const interval = setInterval(() => {
+        current -= 1;
+        if (current <= 0) {
+          clearInterval(interval);
+          setCooldown({ active: false, nextTask: null, secondsLeft: 0 });
+          skipCooldownRef.current = null;
+          resolve(true);
+        } else {
+          setCooldown((prev) => ({ ...prev, secondsLeft: current }));
+        }
+      }, 1000);
+
+      skipCooldownRef.current = () => {
+        clearInterval(interval);
+        setCooldown({ active: false, nextTask: null, secondsLeft: 0 });
+        skipCooldownRef.current = null;
+        resolve(true);
+      };
+    });
+  };
+
+  const handleSkipCooldown = () => {
+    if (skipCooldownRef.current) {
+      skipCooldownRef.current();
+    }
+  };
 
   const [historyList, setHistoryList] = useState<ProjectHistoryItem[]>([]);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
@@ -215,6 +264,14 @@ export default function App() {
       return;
     }
 
+    // If manual mode, user will review blog post and trigger images/youtube when ready
+    if (generationMode === "manual") {
+      return;
+    }
+
+    // --- Cooldown 1: 3 seconds delay before Images to prevent rate limit (429) ---
+    await waitCooldown(3, "images");
+
     // --- Step 2: Image Prompts (8장) Generation ---
     try {
       setSectionStatus((prev) => ({ ...prev, images: "loading" }));
@@ -251,7 +308,11 @@ export default function App() {
       console.error("Image generation error:", err);
       setSectionStatus((prev) => ({ ...prev, images: "error" }));
       setSectionErrors((prev) => ({ ...prev, images: err.message }));
+      return;
     }
+
+    // --- Cooldown 2: 3 seconds delay before YouTube to prevent rate limit (429) ---
+    await waitCooldown(3, "youtube");
 
     // --- Step 3: YouTube Script & Storyboard Generation ---
     try {
@@ -300,6 +361,77 @@ export default function App() {
   const handleSelectTitle = (chosenOption: TitleOption) => {
     setSelectedTitleOption(chosenOption);
     runModularGeneration(topic, chosenOption, selectedModel);
+  };
+
+  // Standalone Single Section Generation (for Manual mode or individual triggering)
+  const handleGenerateImagesOnly = async () => {
+    if (!selectedTitleOption || !generatedContent?.blogPost) return;
+    setSectionStatus((prev) => ({ ...prev, images: "loading" }));
+    setSectionErrors((prev) => ({ ...prev, images: null }));
+
+    try {
+      const imgRes = await fetch("/api/generate-images", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          topic,
+          selectedTitleOption,
+          blogPost: generatedContent.blogPost,
+          model: selectedModel,
+        }),
+      });
+
+      if (!imgRes.ok) {
+        const err = await imgRes.json();
+        throw new Error(err.error || "사진 프롬프트 생성 실패");
+      }
+
+      const imgData = await imgRes.json();
+      setGeneratedContent((prev) =>
+        prev ? { ...prev, imagePrompts: imgData.imagePrompts } : null
+      );
+      setSectionStatus((prev) => ({ ...prev, images: "done" }));
+    } catch (err: any) {
+      setSectionStatus((prev) => ({ ...prev, images: "error" }));
+      setSectionErrors((prev) => ({ ...prev, images: err.message }));
+    }
+  };
+
+  const handleGenerateYoutubeOnly = async () => {
+    if (!selectedTitleOption || !generatedContent?.blogPost) return;
+    setSectionStatus((prev) => ({ ...prev, youtube: "loading" }));
+    setSectionErrors((prev) => ({ ...prev, youtube: null }));
+
+    try {
+      const ytRes = await fetch("/api/generate-youtube", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          topic,
+          selectedTitleOption,
+          blogPost: generatedContent.blogPost,
+          model: selectedModel,
+        }),
+      });
+
+      if (!ytRes.ok) {
+        const err = await ytRes.json();
+        throw new Error(err.error || "유튜브 대본 생성 실패");
+      }
+
+      const ytData = await ytRes.json();
+      setGeneratedContent((prev) => {
+        const updated = prev ? { ...prev, youtubePackage: ytData.youtubePackage } : null;
+        if (updated) {
+          saveToHistory(topic, selectedTitleOption.title, updated);
+        }
+        return updated;
+      });
+      setSectionStatus((prev) => ({ ...prev, youtube: "done" }));
+    } catch (err: any) {
+      setSectionStatus((prev) => ({ ...prev, youtube: "error" }));
+      setSectionErrors((prev) => ({ ...prev, youtube: err.message }));
+    }
   };
 
   // Individual Section Regenerations
@@ -411,6 +543,10 @@ export default function App() {
     setActiveResultTab("BLOG");
     setSectionStatus({ blog: "idle", images: "idle", youtube: "idle" });
     setSectionErrors({ blog: null, images: null, youtube: null });
+    setCooldown({ active: false, nextTask: null, secondsLeft: 0 });
+    if (skipCooldownRef.current) {
+      skipCooldownRef.current();
+    }
   };
 
   // Helper label for current model
@@ -460,11 +596,22 @@ export default function App() {
               <p className="whitespace-pre-line leading-relaxed text-amber-900/90">
                 {errorMessage}
               </p>
-              {selectedTitleOption && workflowStep === "SELECT_TITLE" && (
-                <div className="pt-2">
+              {workflowStep === "INPUT" && topic && (
+                <div className="pt-2 flex items-center gap-2">
+                  <button
+                    onClick={() => handleFetchTitles(topic)}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-amber-700 hover:bg-amber-800 text-white rounded-lg text-xs font-semibold transition-colors shadow-xs cursor-pointer"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>"{topic.slice(0, 15)}..." 주제로 다시 생성 시도</span>
+                  </button>
+                </div>
+              )}
+              {selectedTitleOption && (workflowStep === "SELECT_TITLE" || workflowStep === "RESULT") && (
+                <div className="pt-2 flex items-center gap-2">
                   <button
                     onClick={() => handleSelectTitle(selectedTitleOption)}
-                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-semibold transition-colors shadow-xs cursor-pointer"
+                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-amber-700 hover:bg-amber-800 text-white rounded-lg text-xs font-semibold transition-colors shadow-xs cursor-pointer"
                   >
                     <Sparkles className="w-3.5 h-3.5" />
                     <span>선택한 제목으로 다시 생성 시도</span>
@@ -516,6 +663,8 @@ export default function App() {
               onSelectTitle={handleSelectTitle}
               onReGenerateTitles={() => handleFetchTitles(topic)}
               isLoading={isLoading}
+              generationMode={generationMode}
+              onToggleGenerationMode={setGenerationMode}
             />
           </div>
         )}
@@ -605,6 +754,37 @@ export default function App() {
                   <span className="px-2.5 py-1 bg-white border border-emerald-300 rounded-lg text-xs font-semibold text-emerald-800 shadow-2xs">
                     타겟: {selectedTitleOption.targetAudience}
                   </span>
+                </div>
+              </div>
+            )}
+
+            {/* API Rate Limit Cooldown Active Alert Banner */}
+            {cooldown.active && (
+              <div id="cooldown-banner" className="bg-amber-50 border-2 border-amber-300 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-sm animate-pulse">
+                <div className="flex items-center gap-3.5">
+                  <div className="w-11 h-11 rounded-2xl bg-amber-500 text-white flex items-center justify-center font-black text-lg shadow-xs shrink-0">
+                    {cooldown.secondsLeft}초
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-bold text-amber-950 flex items-center gap-1.5">
+                      <Clock className="w-4 h-4 text-amber-700" />
+                      <span>Gemini API 요청 한도(429) 보호를 위해 3초 쿨다운 대기 중</span>
+                    </h4>
+                    <p className="text-xs text-amber-800/90 mt-0.5">
+                      {cooldown.nextTask === "images"
+                        ? "블로그 작성이 완료되었습니다! 안전한 토큰 할당량 확보 후 [2. 사진 프롬프트 8장] 생성을 자동 시작합니다."
+                        : "사진 프롬프트가 완료되었습니다! 안전한 토큰 할당량 확보 후 [3. 유튜브 대본 & 스토리보드] 생성을 자동 시작합니다."}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
+                  <button
+                    onClick={handleSkipCooldown}
+                    className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-xl transition-all shadow-xs cursor-pointer flex items-center gap-1.5"
+                  >
+                    <span>대기 건너뛰고 지금 바로 진행</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
                 </div>
               </div>
             )}
@@ -717,9 +897,40 @@ export default function App() {
 
               {/* Waiting State for Images */}
               {sectionStatus.images === "idle" && !generatedContent.imagePrompts && (
-                <div className="bg-slate-50 border border-dashed border-slate-300 rounded-2xl p-6 text-center text-slate-500 text-xs">
-                  블로그 글 작성이 완료된 후 자동으로 사진 프롬프트 8장이 생성됩니다.
-                </div>
+                cooldown.active && cooldown.nextTask === "images" ? (
+                  <div className="bg-purple-50/70 border-2 border-dashed border-purple-300 rounded-2xl p-6 sm:p-8 text-center space-y-3">
+                    <div className="flex items-center justify-center gap-2 text-purple-900 font-bold text-sm">
+                      <Clock className="w-4 h-4 animate-spin text-purple-600" />
+                      <span>API 할당량 보호 대기 중: {cooldown.secondsLeft}초 후 자동 생성 시작</span>
+                    </div>
+                    <p className="text-xs text-purple-700 max-w-md mx-auto">
+                      블로그 본문 작성 완료 후 안정적인 API 호출 간격을 확보하고 있습니다. 잠시 후 1:1 정방향 실사 사진 프롬프트 8장이 생성됩니다.
+                    </p>
+                    <button
+                      onClick={handleSkipCooldown}
+                      className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer inline-flex items-center gap-1.5"
+                    >
+                      <span>대기 건너뛰고 지금 바로 생성</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="bg-white border-2 border-dashed border-purple-200 rounded-2xl p-6 sm:p-8 text-center space-y-3 shadow-2xs">
+                    <p className="text-slate-600 text-xs font-medium max-w-md mx-auto">
+                      {generatedContent.blogPost
+                        ? "블로그 본문 문맥과 조화로운 1:1 정방향 실사 사진 프롬프트(8장 세트)를 생성할 수 있습니다."
+                        : "1단계 블로그 글이 작성된 후 사진 프롬프트를 생성할 수 있습니다."}
+                    </p>
+                    <button
+                      onClick={handleGenerateImagesOnly}
+                      disabled={!generatedContent.blogPost}
+                      className="px-5 py-2.5 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <Camera className="w-3.5 h-3.5" />
+                      <span>2단계: 실사 사진 프롬프트 8장 지금 생성하기</span>
+                    </button>
+                  </div>
+                )
               )}
 
               {/* Error State for Images */}
@@ -789,9 +1000,40 @@ export default function App() {
 
               {/* Waiting State for YouTube */}
               {sectionStatus.youtube === "idle" && !generatedContent.youtubePackage && (
-                <div className="bg-slate-50 border border-dashed border-slate-300 rounded-2xl p-6 text-center text-slate-500 text-xs">
-                  사진 프롬프트 생성 후 자동으로 유튜브 대본 &amp; 스토리보드가 생성됩니다.
-                </div>
+                cooldown.active && cooldown.nextTask === "youtube" ? (
+                  <div className="bg-red-50/70 border-2 border-dashed border-red-300 rounded-2xl p-6 sm:p-8 text-center space-y-3">
+                    <div className="flex items-center justify-center gap-2 text-red-900 font-bold text-sm">
+                      <Clock className="w-4 h-4 animate-spin text-red-600" />
+                      <span>API 할당량 보호 대기 중: {cooldown.secondsLeft}초 후 자동 생성 시작</span>
+                    </div>
+                    <p className="text-xs text-red-700 max-w-md mx-auto">
+                      연속 API 호출로 인한 429 한도 초과를 방지하기 위해 3초 인터벌 대기 중입니다. 잠시 후 16~20자 나레이션 및 1:1 스토리보드가 생성됩니다.
+                    </p>
+                    <button
+                      onClick={handleSkipCooldown}
+                      className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer inline-flex items-center gap-1.5"
+                    >
+                      <span>대기 건너뛰고 지금 바로 생성</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="bg-white border-2 border-dashed border-red-200 rounded-2xl p-6 sm:p-8 text-center space-y-3 shadow-2xs">
+                    <p className="text-slate-600 text-xs font-medium max-w-md mx-auto">
+                      {generatedContent.blogPost
+                        ? "16~20자 음성 합성용 나레이션(마침표/쉼표 제거)과 1:1 B-roll 장면 스토리보드를 생성할 수 있습니다."
+                        : "1단계 블로그 글이 작성된 후 유튜브 대본을 생성할 수 있습니다."}
+                    </p>
+                    <button
+                      onClick={handleGenerateYoutubeOnly}
+                      disabled={!generatedContent.blogPost}
+                      className="px-5 py-2.5 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <Video className="w-3.5 h-3.5" />
+                      <span>3단계: 유튜브 대본 &amp; 스토리보드 지금 생성하기</span>
+                    </button>
+                  </div>
+                )
               )}
 
               {/* Error State for YouTube */}

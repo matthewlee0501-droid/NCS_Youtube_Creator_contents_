@@ -1,6 +1,6 @@
 import React from "react";
 import { TitleOption } from "../types";
-import { Sparkles, ArrowRight, Tag, Users, Compass, RefreshCw } from "lucide-react";
+import { Sparkles, ArrowRight, Tag, Users, Compass, RefreshCw, Clock, HandMetal } from "lucide-react";
 
 interface TitleSelectorProps {
   topic: string;
@@ -8,6 +8,8 @@ interface TitleSelectorProps {
   onSelectTitle: (titleOption: TitleOption) => void;
   onReGenerateTitles: () => void;
   isLoading: boolean;
+  generationMode: "auto_delay" | "manual";
+  onToggleGenerationMode: (mode: "auto_delay" | "manual") => void;
 }
 
 export const TitleSelector: React.FC<TitleSelectorProps> = ({
@@ -16,9 +18,11 @@ export const TitleSelector: React.FC<TitleSelectorProps> = ({
   onSelectTitle,
   onReGenerateTitles,
   isLoading,
+  generationMode,
+  onToggleGenerationMode,
 }) => {
   return (
-    <div id="title-selector-wrapper" className="w-full max-w-7xl mx-auto space-y-6">
+    <div id="title-selector-wrapper" className="w-full max-w-7xl mx-auto space-y-5">
       {/* Header */}
       <div id="title-selector-header" className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -43,6 +47,50 @@ export const TitleSelector: React.FC<TitleSelectorProps> = ({
           <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? "animate-spin" : ""}`} />
           <span>제목 다시 추천받기</span>
         </button>
+      </div>
+
+      {/* Sequential Delay Mode Toggle Banner (Addresses User's API Quota / Rate-limit Theory) */}
+      <div id="sequential-mode-panel" className="bg-slate-900 text-white rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-md border border-slate-800">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <span className="px-2 py-0.5 bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded-full text-[11px] font-bold">
+              API 한도(429) 보호 장치
+            </span>
+            <h3 className="text-xs sm:text-sm font-bold text-slate-100">
+              생성 파이프라인 처리 방식
+            </h3>
+          </div>
+          <p className="text-xs text-slate-300 leading-relaxed">
+            {generationMode === "auto_delay"
+              ? "⚡ 블로그 작성 완료 후 3초 간격을 두고 사진 프롬프트 및 유튜브 대본을 순차 생성합니다 (동시 요청 스파이크 방지)."
+              : "✋ 블로그 글을 먼저 작성하여 화면에 표시하며, 사진 프롬프트와 유튜브 대본은 버튼을 눌러 개별 생성합니다."}
+          </p>
+        </div>
+
+        <div className="flex items-center bg-slate-800 p-1 rounded-xl border border-slate-700 shrink-0 self-start sm:self-auto">
+          <button
+            onClick={() => onToggleGenerationMode("auto_delay")}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+              generationMode === "auto_delay"
+                ? "bg-emerald-600 text-white shadow-xs"
+                : "text-slate-400 hover:text-white"
+            }`}
+          >
+            <Clock className="w-3.5 h-3.5" />
+            <span>3초 쿨다운 순차 (권장)</span>
+          </button>
+          <button
+            onClick={() => onToggleGenerationMode("manual")}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+              generationMode === "manual"
+                ? "bg-emerald-600 text-white shadow-xs"
+                : "text-slate-400 hover:text-white"
+            }`}
+          >
+            <HandMetal className="w-3.5 h-3.5" />
+            <span>단계별 수동 확인</span>
+          </button>
+        </div>
       </div>
 
       {/* 4 Title Option Cards */}
