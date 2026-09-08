@@ -19,17 +19,10 @@ export const StepTracker: React.FC<StepTrackerProps> = ({
   const steps = [
     {
       id: "INPUT",
-      label: "주제 입력",
+      label: "주제 & 스타일 선택",
       icon: Edit3,
       isDone: currentStep !== "INPUT",
       isActive: currentStep === "INPUT",
-    },
-    {
-      id: "SELECT_TITLE",
-      label: "제목 4가지 선택",
-      icon: List,
-      isDone: currentStep === "RESULT" || currentStep === "GENERATING",
-      isActive: currentStep === "SELECT_TITLE",
     },
     {
       id: "BLOG",

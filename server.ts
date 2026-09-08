@@ -171,24 +171,22 @@ interface GeminiCallParams {
   useSearchGrounding?: boolean;
 }
 
-// Resilient Multi-Model & Grounding Fallback Engine
+// Resilient & Rate-Limit Friendly Model Invocation Engine
+// Prevents burst requests and high-frequency cascades on rate-limit (429) errors
 async function generateContentWithResilience(
   ai: GoogleGenAI,
   params: GeminiCallParams
 ): Promise<string> {
-  const modelsToTry = [
-    params.primaryModel,
-    "gemini-3.7-flash",
-    "gemini-3.8-flash",
-    "gemini-2.5-flash",
-    "gemini-3.1-flash-lite",
-    "gemini-3.6-flash",
-  ].filter((v, i, a) => a.indexOf(v) === i);
+  const primary = params.primaryModel;
+  // Use a lean 2-model fallback chain to strictly avoid high-frequency burst calls
+  const fallbackModel = primary.includes("2.5") ? "gemini-3.1-flash-lite" : "gemini-2.5-flash";
+  const modelsToTry = [primary, fallbackModel];
 
   let lastError: any;
 
-  // Pass 1: Try models with Google Search Grounding (if requested)
-  for (const model of modelsToTry) {
+  // Attempt with requested settings
+  for (let i = 0; i < modelsToTry.length; i++) {
+    const model = modelsToTry[i];
     try {
       const config: any = {
         responseMimeType: "application/json",
@@ -203,7 +201,7 @@ async function generateContentWithResilience(
         config.tools = [{ googleSearch: {} }];
       }
 
-      console.log(`[Gemini API] Requesting model: ${model} (search: ${!!params.useSearchGrounding})`);
+      console.log(`[Gemini API] Executing request on model: ${model} (search: ${!!params.useSearchGrounding})`);
       const response = await ai.models.generateContent({
         model,
         contents: params.contents,
@@ -217,7 +215,7 @@ async function generateContentWithResilience(
     } catch (err: any) {
       lastError = err;
       const errMsg = err?.message || (typeof err === "string" ? err : JSON.stringify(err));
-      console.warn(`[Gemini API] Warning with model ${model} (search=${!!params.useSearchGrounding}): ${errMsg}`);
+      console.warn(`[Gemini API] Request warning on model ${model}:`, errMsg);
 
       const isRateLimit =
         errMsg.includes("429") ||
@@ -227,42 +225,40 @@ async function generateContentWithResilience(
         err?.status === 429 ||
         err?.code === 429;
 
-      if (isRateLimit) {
-        // Short pause before trying next fallback model
-        await new Promise((r) => setTimeout(r, 1200));
+      if (isRateLimit && i < modelsToTry.length - 1) {
+        // Safe 2.5s pause before single fallback to respect rate limits
+        console.log(`[Gemini API] 429 Rate limit detected. Waiting 2500ms before fallback to ${fallbackModel}...`);
+        await new Promise((r) => setTimeout(r, 2500));
       }
     }
   }
 
-  // Pass 2: If Search Grounding was active and caused 429 Quota exhaustion, fallback without search tool
+  // If search grounding was active and caused quota exhaustion, try 1 single time without search tool
   if (params.useSearchGrounding) {
-    console.log("[Gemini API] Attempting non-grounded fallback to bypass search quota limits...");
-    for (const model of modelsToTry) {
-      try {
-        const config: any = {
-          responseMimeType: "application/json",
-        };
-        if (params.systemInstruction) {
-          config.systemInstruction = params.systemInstruction;
-        }
-        if (params.responseSchema) {
-          config.responseSchema = params.responseSchema;
-        }
-
-        const response = await ai.models.generateContent({
-          model,
-          contents: params.contents,
-          config,
-        });
-
-        const text = response.text;
-        if (text && text.trim().length > 0) {
-          return text;
-        }
-      } catch (err: any) {
-        lastError = err;
-        await new Promise((r) => setTimeout(r, 1000));
+    console.log("[Gemini API] Attempting non-grounded fallback to preserve quota...");
+    try {
+      const config: any = {
+        responseMimeType: "application/json",
+      };
+      if (params.systemInstruction) {
+        config.systemInstruction = params.systemInstruction;
       }
+      if (params.responseSchema) {
+        config.responseSchema = params.responseSchema;
+      }
+
+      const response = await ai.models.generateContent({
+        model: primary,
+        contents: params.contents,
+        config,
+      });
+
+      const text = response.text;
+      if (text && text.trim().length > 0) {
+        return text;
+      }
+    } catch (err: any) {
+      lastError = err;
     }
   }
 

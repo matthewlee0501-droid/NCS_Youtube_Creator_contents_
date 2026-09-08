@@ -596,25 +596,14 @@ export default function App() {
               <p className="whitespace-pre-line leading-relaxed text-amber-900/90">
                 {errorMessage}
               </p>
-              {workflowStep === "INPUT" && topic && (
+              {topic && selectedTitleOption && (
                 <div className="pt-2 flex items-center gap-2">
                   <button
-                    onClick={() => handleFetchTitles(topic)}
+                    onClick={() => runModularGeneration(topic, selectedTitleOption, selectedModel)}
                     className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-amber-700 hover:bg-amber-800 text-white rounded-lg text-xs font-semibold transition-colors shadow-xs cursor-pointer"
                   >
                     <Sparkles className="w-3.5 h-3.5" />
-                    <span>"{topic.slice(0, 15)}..." 주제로 다시 생성 시도</span>
-                  </button>
-                </div>
-              )}
-              {selectedTitleOption && (workflowStep === "SELECT_TITLE" || workflowStep === "RESULT") && (
-                <div className="pt-2 flex items-center gap-2">
-                  <button
-                    onClick={() => handleSelectTitle(selectedTitleOption)}
-                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-amber-700 hover:bg-amber-800 text-white rounded-lg text-xs font-semibold transition-colors shadow-xs cursor-pointer"
-                  >
-                    <Sparkles className="w-3.5 h-3.5" />
-                    <span>선택한 제목으로 다시 생성 시도</span>
+                    <span>콘텐츠 생성 다시 시도</span>
                   </button>
                 </div>
               )}
@@ -631,11 +620,19 @@ export default function App() {
 
       {/* Main Workspace Area */}
       <main id="main-content" className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Step 1: Topic Input */}
+        {/* Step 1: Topic Input & Style Selection (Zero Preliminary API Calls!) */}
         {workflowStep === "INPUT" && (
           <TopicInput
-            onSubmitTopic={handleFetchTitles}
-            isLoading={isLoading}
+            onStartCreation={({ topic: newTopic, titleOption, generationMode: newMode }) => {
+              setTopic(newTopic);
+              setSelectedTitleOption(titleOption);
+              setGenerationMode(newMode);
+              runModularGeneration(newTopic, titleOption, selectedModel);
+            }}
+            isLoading={isLoading || sectionStatus.blog === "loading"}
+            initialTopic={topic}
+            generationMode={generationMode}
+            onToggleGenerationMode={setGenerationMode}
           />
         )}
 
@@ -727,10 +724,10 @@ export default function App() {
                 </div>
 
                 <button
-                  onClick={() => setWorkflowStep("SELECT_TITLE")}
+                  onClick={() => setWorkflowStep("INPUT")}
                   className="text-xs font-semibold text-slate-300 hover:text-white px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 transition-colors border border-slate-700 cursor-pointer"
                 >
-                  제목 다시 선택
+                  주제 / 스타일 변경
                 </button>
               </div>
             </div>
