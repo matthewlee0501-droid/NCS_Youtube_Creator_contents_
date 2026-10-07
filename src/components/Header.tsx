@@ -49,11 +49,11 @@ export const Header: React.FC<HeaderProps> = ({
               value={selectedModel}
               onChange={(e) => onSelectModel(e.target.value)}
               className="bg-transparent text-slate-800 font-semibold focus:outline-none cursor-pointer text-xs pr-1"
-              title="AI 엔진 모델 선택 (3.6, 3.7, 3.8 Flash)"
+              title="AI 엔진 모델 선택 (3.8 Flash, 3.7 Flash, 3.1 Flash Lite)"
             >
-              <option value="gemini-3.6-flash">3.6 Flash (무료/빠름)</option>
+              <option value="gemini-3.8-flash">3.8 Flash (최신/고성능 권장)</option>
               <option value="gemini-3.7-flash">3.7 Flash (균형/안정)</option>
-              <option value="gemini-3.8-flash">3.8 Flash (최신/고성능)</option>
+              <option value="gemini-3.1-flash-lite">3.1 Flash Lite (경량/고속)</option>
             </select>
           </div>
 

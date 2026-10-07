@@ -43,8 +43,8 @@ export default function App() {
     "BLOG" | "IMAGES" | "YOUTUBE"
   >("BLOG");
 
-  // Selected AI Engine Model (3.6, 3.7, 3.8 Flash)
-  const [selectedModel, setSelectedModel] = useState<string>("gemini-3.6-flash");
+  // Selected AI Engine Model (3.8 Flash, 3.7 Flash, 3.1 Flash Lite)
+  const [selectedModel, setSelectedModel] = useState<string>("gemini-3.8-flash");
 
   const [topic, setTopic] = useState("");
   const [titleOptions, setTitleOptions] = useState<TitleOption[]>([]);
@@ -552,12 +552,12 @@ export default function App() {
   // Helper label for current model
   const getModelLabel = (modelId: string) => {
     switch (modelId) {
-      case "gemini-3.6-flash":
-        return "Gemini 3.6 Flash (무료 티어 권장)";
+      case "gemini-3.8-flash":
+        return "Gemini 3.8 Flash (최신 권장)";
       case "gemini-3.7-flash":
         return "Gemini 3.7 Flash";
-      case "gemini-3.8-flash":
-        return "Gemini 3.8 Flash";
+      case "gemini-3.1-flash-lite":
+        return "Gemini 3.1 Flash Lite (경량/고속)";
       default:
         return modelId;
     }

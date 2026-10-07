@@ -29,14 +29,13 @@ const getGeminiClient = () => {
 
 // Helper to sanitize requested model
 function getValidModel(requestedModel?: string): string {
-  if (!requestedModel) return "gemini-3.7-flash";
+  if (!requestedModel) return "gemini-3.8-flash";
   const m = requestedModel.toLowerCase().trim();
   if (m.includes("3.8")) return "gemini-3.8-flash";
   if (m.includes("3.7")) return "gemini-3.7-flash";
-  if (m.includes("3.6")) return "gemini-3.6-flash";
-  if (m.includes("2.5")) return "gemini-2.5-flash";
-  if (m.includes("lite")) return "gemini-3.1-flash-lite";
-  return requestedModel;
+  if (m.includes("3.1") || m.includes("lite")) return "gemini-3.1-flash-lite";
+  if (m.includes("3.6") || m.includes("flash")) return "gemini-3.8-flash";
+  return "gemini-3.8-flash";
 }
 
 // Schemas for modular generation
@@ -177,28 +176,37 @@ async function generateContentWithResilience(
   ai: GoogleGenAI,
   params: GeminiCallParams
 ): Promise<string> {
-  const primary = params.primaryModel;
-  // Use a lean 2-model fallback chain to strictly avoid high-frequency burst calls
-  const fallbackModel = primary.includes("2.5") ? "gemini-3.1-flash-lite" : "gemini-2.5-flash";
-  const modelsToTry = [primary, fallbackModel];
+  const primary = params.primaryModel || "gemini-3.8-flash";
+  
+  // Build a lean fallback chain of supported Gemini 3 series models
+  const candidateModels: string[] = [primary];
+  if (primary !== "gemini-3.8-flash") candidateModels.push("gemini-3.8-flash");
+  if (primary !== "gemini-3.1-flash-lite") candidateModels.push("gemini-3.1-flash-lite");
+  
+  // Deduplicate
+  const modelsToTry = Array.from(new Set(candidateModels));
 
   let lastError: any;
 
-  // Attempt with requested settings
   for (let i = 0; i < modelsToTry.length; i++) {
     const model = modelsToTry[i];
     try {
-      const config: any = {
-        responseMimeType: "application/json",
-      };
+      const config: any = {};
+
       if (params.systemInstruction) {
         config.systemInstruction = params.systemInstruction;
       }
-      if (params.responseSchema) {
-        config.responseSchema = params.responseSchema;
-      }
+
+      // CRITICAL: Gemini API does NOT allow tool use (e.g. googleSearch) with responseMimeType: 'application/json' or responseSchema.
+      // If search grounding is requested, tools are added and JSON formatting is requested via instructions only.
+      // Otherwise, pure JSON mode with responseSchema is used.
       if (params.useSearchGrounding) {
         config.tools = [{ googleSearch: {} }];
+      } else {
+        config.responseMimeType = "application/json";
+        if (params.responseSchema) {
+          config.responseSchema = params.responseSchema;
+        }
       }
 
       console.log(`[Gemini API] Executing request on model: ${model} (search: ${!!params.useSearchGrounding})`);
@@ -217,6 +225,37 @@ async function generateContentWithResilience(
       const errMsg = err?.message || (typeof err === "string" ? err : JSON.stringify(err));
       console.warn(`[Gemini API] Request warning on model ${model}:`, errMsg);
 
+      // If search grounding was attempted and failed due to quota (429) or tool conflict (400),
+      // retry once without search grounding using pure JSON mode
+      if (params.useSearchGrounding) {
+        console.log(`[Gemini API] Fallback to pure JSON mode without search tool on ${model}...`);
+        try {
+          const fallbackConfig: any = {
+            responseMimeType: "application/json",
+          };
+          if (params.systemInstruction) {
+            fallbackConfig.systemInstruction = params.systemInstruction;
+          }
+          if (params.responseSchema) {
+            fallbackConfig.responseSchema = params.responseSchema;
+          }
+
+          const fallbackResponse = await ai.models.generateContent({
+            model,
+            contents: params.contents,
+            config: fallbackConfig,
+          });
+
+          const fallbackText = fallbackResponse.text;
+          if (fallbackText && fallbackText.trim().length > 0) {
+            return fallbackText;
+          }
+        } catch (fallbackErr: any) {
+          lastError = fallbackErr;
+          console.warn(`[Gemini API] Non-search fallback also failed on ${model}:`, fallbackErr?.message);
+        }
+      }
+
       const isRateLimit =
         errMsg.includes("429") ||
         errMsg.includes("RESOURCE_EXHAUSTED") ||
@@ -226,39 +265,10 @@ async function generateContentWithResilience(
         err?.code === 429;
 
       if (isRateLimit && i < modelsToTry.length - 1) {
-        // Safe 2.5s pause before single fallback to respect rate limits
-        console.log(`[Gemini API] 429 Rate limit detected. Waiting 2500ms before fallback to ${fallbackModel}...`);
-        await new Promise((r) => setTimeout(r, 2500));
+        const nextModel = modelsToTry[i + 1];
+        console.log(`[Gemini API] 429 Rate limit on ${model}. Waiting 1500ms before fallback to ${nextModel}...`);
+        await new Promise((r) => setTimeout(r, 1500));
       }
-    }
-  }
-
-  // If search grounding was active and caused quota exhaustion, try 1 single time without search tool
-  if (params.useSearchGrounding) {
-    console.log("[Gemini API] Attempting non-grounded fallback to preserve quota...");
-    try {
-      const config: any = {
-        responseMimeType: "application/json",
-      };
-      if (params.systemInstruction) {
-        config.systemInstruction = params.systemInstruction;
-      }
-      if (params.responseSchema) {
-        config.responseSchema = params.responseSchema;
-      }
-
-      const response = await ai.models.generateContent({
-        model: primary,
-        contents: params.contents,
-        config,
-      });
-
-      const text = response.text;
-      if (text && text.trim().length > 0) {
-        return text;
-      }
-    } catch (err: any) {
-      lastError = err;
     }
   }
 
@@ -338,10 +348,10 @@ app.post("/api/generate-titles", async (req, res) => {
 
     const text = await generateContentWithResilience(ai, {
       primaryModel: targetModel,
-      contents: `사용자가 작성하고 싶은 주제/아이디어: "${topic}"\n\n구글 실시간 웹 검색(Google Search)을 참고하여 최신 트렌드와 정보를 조사한 후, 위 주제를 바탕으로 네이버 상위노출을 위한 4가지 블로그 제목 및 타겟 옵션을 JSON으로 생성해주세요.`,
+      contents: `사용자가 작성하고 싶은 주제/아이디어: "${topic}"\n\n2026년 최신 네이버 스마트블록 알고리즘과 검색 트렌드를 반영하여, 위 주제를 바탕으로 상위노출을 위한 4가지 매력적인 블로그 제목 및 타겟 옵션을 JSON으로 생성해주세요.`,
       systemInstruction,
       responseSchema: titlesSchema,
-      useSearchGrounding: true,
+      useSearchGrounding: false,
     });
 
     const titles = cleanAndParseJson<any[]>(text, []);
@@ -409,7 +419,7 @@ app.post("/api/generate-blog", async (req, res) => {
       contents: userMessage,
       systemInstruction,
       responseSchema: blogPostSchema,
-      useSearchGrounding: true,
+      useSearchGrounding: false,
     });
 
     const blogPost = cleanAndParseJson<any>(text, null);
@@ -640,7 +650,7 @@ app.post("/api/generate-content", async (req, res) => {
       contents: userMessage,
       systemInstruction: promptInstructions,
       responseSchema: combinedSchema,
-      useSearchGrounding: true,
+      useSearchGrounding: false,
     });
 
     const resultData = cleanAndParseJson<any>(text, null);
